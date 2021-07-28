@@ -23,6 +23,7 @@ type Serve struct {
 	Root  string
 	Info  *log.Logger
 	Debug *log.Logger
+    Bare  bool
 }
 
 func (s *Serve) Start() error {
@@ -156,46 +157,52 @@ func (s *Serve) Repos() ([]Repo, error) {
 			return filepath.SkipDir
 		}
 
-		bare_gitdir := filepath.Join(path, "refs")
-		if fi, err := os.Stat(bare_gitdir); err != nil || fi.IsDir() {
-			x := exec.Command("git", "rev-parse", "--is-bare-repository")
-			x.Dir = bare_gitdir
-			xut, _ := x.CombinedOutput()
+        if s.Bare {
+            //  Serving bare repository, 
+            //  mimic unpacked repository by creating some symbolic-links
+            bare_gitdir := filepath.Join(path, "refs")
+            if fi, err := os.Stat(bare_gitdir); err != nil || fi.IsDir() {
+                c := exec.Command("git", "rev-parse", "--is-bare-repository")
+                c.Dir = bare_gitdir
+                out, _ := c.CombinedOutput()
 
-			if string(xut) == "true\n" {
-				subpath, err := filepath.Rel(root, path)
+                if string(out) == "true\n" {
+                    subpath, _ := filepath.Rel(root, path)
 
-				if err != nil {
-					// According to WalkFunc docs, path is always filepath.Join(root,
-					// subpath). So Rel should always work.
-					s.Info.Fatalf("filepath.Walk returned %s which is not relative to %s: %v", path, root, err)
-				}
+                    if _, err := os.Stat(path + "/.git"); os.IsNotExist(err) {
+                        s.Debug.Printf("INFO: bare repo create symbolic link for .git -> %s", path)
+                        c := exec.Command("ln", "-s", ".", ".git")
+                        c.Dir = path
+                        _ = c.Run()
+                    }
 
-				if _, err := os.Stat(path + "/.git"); os.IsNotExist(err) {
-					s.Debug.Printf("INFO: bare repo create symbolic link for .git -> %s", path)
-					cmd := exec.Command("ln", "-s", ".", ".git")
-					cmd.Dir = path
-					_ = cmd.Run()
-				}
+                    if ext := filepath.Ext(path); ext == ".git" {
+                        c := exec.Command("mv", path, strings.TrimSuffix(path, ".git"))
+                        c.Dir = path
+                        _ = c.Run()
+                    }
 
-				if ext := filepath.Ext(path); ext == ".git" {
-					cmd := exec.Command("ln", "-s", path, strings.TrimSuffix(path, ext))
-					cmd.Dir = filepath.Clean(path + "/..")
-					_ = cmd.Run()
+                    subpath = strings.TrimSuffix(subpath, ".git")
 
-					subpath = strings.TrimSuffix(subpath, ext)
-				}
+                    name := filepath.ToSlash(subpath)
+                    reposRootIsRepo = reposRootIsRepo || name == "."
+                    repos = append(repos, Repo{
+                        Name: name,
+                        URI:  pathpkg.Join("/repos", name),
+                    })
 
-				name := filepath.ToSlash(subpath)
-				reposRootIsRepo = reposRootIsRepo || name == "."
-				repos = append(repos, Repo{
-					Name: name,
-					URI:  pathpkg.Join("/repos", name),
-				})
+                    return filepath.SkipDir
+                }
+            }
+        } else {
+            c := exec.Command("git", "rev-parse", "--is-bare-repository")
+            c.Dir = path
+            out, _ := c.CombinedOutput()
 
-				return filepath.SkipDir
-			}
-		}
+            if string(out) == "true\n" {
+                return filepath.SkipDir
+            }
+        }
 
 		// Check whether a particular directory is a repository or not.
 		//
