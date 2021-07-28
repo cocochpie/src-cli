@@ -156,6 +156,47 @@ func (s *Serve) Repos() ([]Repo, error) {
 			return filepath.SkipDir
 		}
 
+		bare_gitdir := filepath.Join(path, "refs")
+		if fi, err := os.Stat(bare_gitdir); err != nil || fi.IsDir() {
+			x := exec.Command("git", "rev-parse", "--is-bare-repository")
+			x.Dir = bare_gitdir
+			xut, _ := x.CombinedOutput()
+
+			if string(xut) == "true\n" {
+				subpath, err := filepath.Rel(root, path)
+
+				if err != nil {
+					// According to WalkFunc docs, path is always filepath.Join(root,
+					// subpath). So Rel should always work.
+					s.Info.Fatalf("filepath.Walk returned %s which is not relative to %s: %v", path, root, err)
+				}
+
+				if _, err := os.Stat(path + "/.git"); os.IsNotExist(err) {
+					s.Debug.Printf("INFO: bare repo create symbolic link for .git -> %s", path)
+					cmd := exec.Command("ln", "-s", ".", ".git")
+					cmd.Dir = path
+					_ = cmd.Run()
+				}
+
+				if ext := filepath.Ext(path); ext == ".git" {
+					cmd := exec.Command("ln", "-s", path, strings.TrimSuffix(path, ext))
+					cmd.Dir = filepath.Clean(path + "/..")
+					_ = cmd.Run()
+
+					subpath = strings.TrimSuffix(subpath, ext)
+				}
+
+				name := filepath.ToSlash(subpath)
+				reposRootIsRepo = reposRootIsRepo || name == "."
+				repos = append(repos, Repo{
+					Name: name,
+					URI:  pathpkg.Join("/repos", name),
+				})
+
+				return filepath.SkipDir
+			}
+		}
+
 		// Check whether a particular directory is a repository or not.
 		//
 		// A directory which also is a repository (have .git folder inside it)
